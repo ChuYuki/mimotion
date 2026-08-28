@@ -60,8 +60,8 @@ jobs:
           start = now.replace(hour=start_time[0], minute=start_time[1], second=0, microsecond=0)
           end = now.replace(hour=end_time[0], minute=end_time[1], second=59, microsecond=0)
 
-          if now > end:
-              print(f"北京时间 {now:%H:%M:%S} 已错过 {period} 窗口，跳过本次提交")
+          if now < start or now > end:
+              print(f"北京时间 {now:%H:%M:%S} 不在 {period} 窗口，跳过本次提交")
               with open(os.environ["GITHUB_ENV"], "a") as output:
                   output.write("RUN_SYNC=false\n")
               raise SystemExit

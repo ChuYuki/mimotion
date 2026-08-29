@@ -61,14 +61,12 @@ jobs:
           start = now.replace(hour=start_time[0], minute=start_time[1], second=0, microsecond=0)
           end = now.replace(hour=end_time[0], minute=end_time[1], second=59, microsecond=0)
 
-          if now > end or (not schedule and now < start):
+          if schedule and now > end:
               print(f"北京时间 {now:%H:%M:%S} 不在 {period} 窗口，跳过本次提交")
-              with open(os.environ["GITHUB_ENV"], "a") as output:
-                  output.write("RUN_SYNC=false\n")
               raise SystemExit
 
-          earliest = max(now, start)
-          delay = random.randint(0, int((end - earliest).total_seconds()))
+          earliest = max(now, start) if schedule else now
+          delay = random.randint(0, int((end - earliest).total_seconds())) if schedule else 0
           target = earliest.timestamp() + delay
           step = random.randint(*step_range)
           print(f"计划北京时间 {datetime.fromtimestamp(target, ZoneInfo('Asia/Shanghai')):%H:%M:%S} 提交 {step} 步")

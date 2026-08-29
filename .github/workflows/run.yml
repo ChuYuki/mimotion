@@ -32,9 +32,13 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: 安装依赖
+        run: pip3 install -r requirements.txt
+
       - name: 生成北京时间随机任务
         env:
-          BASE_CONFIG: ${{ secrets.CONFIG }}
+          ZEPP_USER: ${{ secrets.ZEPP_USER }}
+          ZEPP_PASSWORD: ${{ secrets.ZEPP_PASSWORD }}
           SCHEDULE: ${{ github.event.schedule }}
           MANUAL_PERIOD: ${{ inputs.period }}
         run: |
@@ -42,6 +46,8 @@ jobs:
           import json
           import os
           import random
+          import subprocess
+          import sys
           import time
           from datetime import datetime
           from zoneinfo import ZoneInfo
@@ -72,20 +78,15 @@ jobs:
           print(f"计划北京时间 {datetime.fromtimestamp(target, ZoneInfo('Asia/Shanghai')):%H:%M:%S} 提交 {step} 步")
           time.sleep(delay)
 
-          config = json.loads(os.environ["BASE_CONFIG"])
-          config.update({
+          config = {
+              "USER": os.environ["ZEPP_USER"],
+              "PWD": os.environ["ZEPP_PASSWORD"],
               "MIN_STEP": str(step),
               "MAX_STEP": str(step),
               "SCALE_STEP_BY_TIME": "False",
               "USE_CONCURRENT": "False",
-          })
-          with open(os.environ["GITHUB_ENV"], "a") as output:
-              output.write("RUN_SYNC=true\n")
-              output.write("CONFIG=" + json.dumps(config, separators=(",", ":")) + "\n")
+          }
+          env = os.environ.copy()
+          env["CONFIG"] = json.dumps(config, separators=(",", ":"))
+          subprocess.run([sys.executable, "main.py"], check=True, env=env)
           PY
-
-      - name: 开始
-        if: env.RUN_SYNC == 'true'
-        run: |
-          pip3 install -r requirements.txt
-          python3 main.py

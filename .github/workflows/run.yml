@@ -1,11 +1,9 @@
 name: 刷步数
 
 on:
+  # GitHub 的单次 cron 可能延迟数小时；持续心跳按实际北京时间决定是否提交。
   schedule:
-    # 提前 5 分钟启动 Runner，实际提交仍限制在北京时间 08:10–08:30
-    - cron: '5 0 * * *'
-    # 提前 5 分钟启动 Runner，实际提交仍限制在北京时间 17:40–17:50
-    - cron: '35 9 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       period:
@@ -17,30 +15,83 @@ on:
         default: morning
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: mimotion-submit
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: 判断北京时间窗口
+        id: window
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_PERIOD: ${{ inputs.period }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          now = datetime.now(ZoneInfo("Asia/Shanghai"))
+          period = os.environ.get("MANUAL_PERIOD", "morning")
+          active = os.environ["EVENT_NAME"] == "workflow_dispatch"
+          morning = range(8 * 60 + 10, 8 * 60 + 31)
+          evening = range(17 * 60 + 40, 17 * 60 + 51)
+
+          if not active:
+              minute = now.hour * 60 + now.minute
+              if minute in morning:
+                  period, active = "morning", True
+              elif minute in evening:
+                  period, active = "evening", True
+
+          assert 8 * 60 + 9 not in morning and 8 * 60 + 30 in morning and 17 * 60 + 50 in evening
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"active={str(active).lower()}", file=output)
+              print(f"period={period}", file=output)
+              print(f"day={now:%Y-%m-%d}", file=output)
+              print(f"month_day={now:%d}", file=output)
+              print(f"scheduled={str(os.environ['EVENT_NAME'] == 'schedule').lower()}", file=output)
+          print(f"北京时间 {now:%F %T}，{'进入' if active else '不在'}提交窗口")
+          PY
+
+      - name: 检查今日提交锁
+        id: lock
+        if: steps.window.outputs.active == 'true' && steps.window.outputs.scheduled == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .mimotion-lock
+          key: mimotion-${{ steps.window.outputs.day }}-${{ steps.window.outputs.period }}
+          lookup-only: true
+
       - name: Checkout codes
+        if: steps.window.outputs.active == 'true' && steps.lock.outputs.cache-hit != 'true'
         uses: actions/checkout@v5
 
       - name: 初始化Python
+        if: steps.window.outputs.active == 'true' && steps.lock.outputs.cache-hit != 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.10"
 
       - name: 安装依赖
+        if: steps.window.outputs.active == 'true' && steps.lock.outputs.cache-hit != 'true'
         run: pip3 install -r requirements.txt
 
-      - name: 生成北京时间随机任务
+      - name: 随机时间和步数并提交
+        id: submit
+        if: steps.window.outputs.active == 'true' && steps.lock.outputs.cache-hit != 'true'
         env:
           ZEPP_USER: ${{ secrets.ZEPP_USER }}
           ZEPP_PASSWORD: ${{ secrets.ZEPP_PASSWORD }}
-          SCHEDULE: ${{ github.event.schedule }}
-          MANUAL_PERIOD: ${{ inputs.period }}
+          PERIOD: ${{ steps.window.outputs.period }}
+          SCHEDULED: ${{ steps.window.outputs.scheduled }}
         run: |
           python3 - <<'PY'
           import json
@@ -53,29 +104,27 @@ jobs:
           from zoneinfo import ZoneInfo
 
           periods = {
-              "morning": ((8, 10), (8, 30), (1026, 1226)),
-              "evening": ((17, 40), (17, 50), (3250, 3450)),
+              "morning": ((8, 30), (1026, 1226)),
+              "evening": ((17, 50), (3250, 3450)),
           }
-          schedule_periods = {
-              "5 0 * * *": "morning",
-              "35 9 * * *": "evening",
-          }
-          schedule = os.environ.get("SCHEDULE")
-          period = schedule_periods.get(schedule) or os.environ.get("MANUAL_PERIOD", "morning")
-          start_time, end_time, step_range = periods[period]
+          period = os.environ["PERIOD"]
+          end_time, step_range = periods[period]
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
-          start = now.replace(hour=start_time[0], minute=start_time[1], second=0, microsecond=0)
-          end = now.replace(hour=end_time[0], minute=end_time[1], second=59, microsecond=0)
+          delay = 0
 
-          if schedule and now > end:
-              print(f"北京时间 {now:%H:%M:%S} 不在 {period} 窗口，跳过本次提交")
-              raise SystemExit
+          if os.environ["SCHEDULED"] == "true":
+              end = now.replace(hour=end_time[0], minute=end_time[1], second=59, microsecond=0)
+              remaining = int((end - now).total_seconds())
+              if remaining < 0:
+                  print("依赖安装完成时已超过窗口，本次不提交")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                      print("submitted=false", file=output)
+                  raise SystemExit
+              delay = random.randint(0, remaining)
 
-          earliest = max(now, start) if schedule else now
-          delay = random.randint(0, int((end - earliest).total_seconds())) if schedule else 0
-          target = earliest.timestamp() + delay
           step = random.randint(*step_range)
-          print(f"计划北京时间 {datetime.fromtimestamp(target, ZoneInfo('Asia/Shanghai')):%H:%M:%S} 提交 {step} 步")
+          target = datetime.fromtimestamp(now.timestamp() + delay, ZoneInfo("Asia/Shanghai"))
+          print(f"计划北京时间 {target:%H:%M:%S} 提交 {step} 步")
           time.sleep(delay)
 
           config = {
@@ -89,4 +138,27 @@ jobs:
           env = os.environ.copy()
           env["CONFIG"] = json.dumps(config, separators=(",", ":"))
           subprocess.run([sys.executable, "main.py"], check=True, env=env)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print("submitted=true", file=output)
           PY
+
+      - name: 写入今日提交锁
+        if: steps.submit.outputs.submitted == 'true' && steps.window.outputs.scheduled == 'true'
+        run: mkdir -p .mimotion-lock && date -u > .mimotion-lock/submitted-at
+
+      - name: 保存今日提交锁
+        if: steps.submit.outputs.submitted == 'true' && steps.window.outputs.scheduled == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .mimotion-lock
+          key: mimotion-${{ steps.window.outputs.day }}-${{ steps.window.outputs.period }}
+
+      - name: 保持公开仓库定时任务启用
+        if: steps.submit.outputs.submitted == 'true' && steps.window.outputs.scheduled == 'true' && steps.window.outputs.month_day == '01'
+        run: |
+          date -u +%Y-%m > .github/keepalive
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/keepalive
+          git diff --cached --quiet || git commit -m "chore: keep scheduled workflow active"
+          git push

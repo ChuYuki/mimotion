@@ -1,9 +1,12 @@
 name: 刷步数
 
 on:
-  # GitHub 的单次 cron 可能延迟数小时；持续心跳按实际北京时间决定是否提交。
+  # 每小时一个候选触发，覆盖 GitHub 已观测到的 0–8 小时调度延迟。
   schedule:
-    - cron: '*/5 * * * *'
+    # 北京时间上午窗口及此前 8 小时
+    - cron: '10 0,16-23 * * *'
+    # 北京时间下午窗口及此前 8 小时
+    - cron: '40 1-9 * * *'
   workflow_dispatch:
     inputs:
       period:
@@ -24,7 +27,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - name: 判断北京时间窗口
         id: window
@@ -40,8 +43,8 @@ jobs:
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
           period = os.environ.get("MANUAL_PERIOD", "morning")
           active = os.environ["EVENT_NAME"] == "workflow_dispatch"
-          morning = range(8 * 60 + 10, 8 * 60 + 31)
-          evening = range(17 * 60 + 40, 17 * 60 + 51)
+          morning = range(7 * 60 + 30, 8 * 60 + 31)
+          evening = range(16 * 60 + 50, 17 * 60 + 51)
 
           if not active:
               minute = now.hour * 60 + now.minute
@@ -50,7 +53,7 @@ jobs:
               elif minute in evening:
                   period, active = "evening", True
 
-          assert 8 * 60 + 9 not in morning and 8 * 60 + 30 in morning and 17 * 60 + 50 in evening
+          assert 7 * 60 + 29 not in morning and 8 * 60 + 30 in morning and 17 * 60 + 50 in evening
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print(f"active={str(active).lower()}", file=output)
@@ -104,23 +107,25 @@ jobs:
           from zoneinfo import ZoneInfo
 
           periods = {
-              "morning": ((8, 30), (1026, 1226)),
-              "evening": ((17, 50), (3250, 3450)),
+              "morning": ((8, 10), (8, 30), (1026, 1226)),
+              "evening": ((17, 40), (17, 50), (3250, 3450)),
           }
           period = os.environ["PERIOD"]
-          end_time, step_range = periods[period]
+          start_time, end_time, step_range = periods[period]
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
           delay = 0
 
           if os.environ["SCHEDULED"] == "true":
+              start = now.replace(hour=start_time[0], minute=start_time[1], second=0, microsecond=0)
               end = now.replace(hour=end_time[0], minute=end_time[1], second=59, microsecond=0)
-              remaining = int((end - now).total_seconds())
+              earliest = max(now, start)
+              remaining = int((end - earliest).total_seconds())
               if remaining < 0:
                   print("依赖安装完成时已超过窗口，本次不提交")
                   with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                       print("submitted=false", file=output)
                   raise SystemExit
-              delay = random.randint(0, remaining)
+              delay = int((earliest - now).total_seconds()) + random.randint(0, remaining)
 
           step = random.randint(*step_range)
           target = datetime.fromtimestamp(now.timestamp() + delay, ZoneInfo("Asia/Shanghai"))

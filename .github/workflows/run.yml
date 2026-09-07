@@ -16,6 +16,10 @@ on:
           - morning
           - evening
         default: morning
+      steps:
+        description: 手动指定步数（留空则按时段随机）
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -100,6 +104,7 @@ jobs:
           ZEPP_PASSWORD: ${{ secrets.ZEPP_PASSWORD }}
           PERIOD: ${{ steps.window.outputs.period }}
           SCHEDULED: ${{ steps.window.outputs.scheduled }}
+          MANUAL_STEPS: ${{ inputs.steps }}
         run: |
           python3 - <<'PY'
           import json
@@ -132,7 +137,7 @@ jobs:
                   raise SystemExit
               delay = int((earliest - now).total_seconds()) + random.randint(0, remaining)
 
-          step = random.randint(*step_range)
+          step = int(os.environ.get("MANUAL_STEPS") or 0) or random.randint(*step_range)
           target = datetime.fromtimestamp(now.timestamp() + delay, ZoneInfo("Asia/Shanghai"))
           print(f"计划北京时间 {target:%H:%M:%S} 提交 {step} 步")
           time.sleep(delay)

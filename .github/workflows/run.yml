@@ -27,7 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # 最早 03:00 触发、最晚 08:30 提交，需容纳 5.5 小时等待（GitHub 单 job 硬上限 6 小时）
+    timeout-minutes: 345
     steps:
       - name: 判断北京时间窗口
         id: window
@@ -43,8 +44,11 @@ jobs:
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
           period = os.environ.get("MANUAL_PERIOD", "morning")
           active = os.environ["EVENT_NAME"] == "workflow_dispatch"
-          morning = range(7 * 60 + 30, 8 * 60 + 31)
-          evening = range(16 * 60 + 50, 17 * 60 + 51)
+          # 窗口从目标时段起点往前放宽 4~5 小时：GitHub 对公开仓库的 schedule 限流
+          # 会砍掉大部分候选触发并随机漂移，窄窗口实测 5 天只命中 2 次早上、0 次傍晚。
+          # 命中后由下方 submit 步骤 sleep 到真正的提交时间点，提交时刻不变。
+          morning = range(3 * 60, 8 * 60 + 31)
+          evening = range(12 * 60, 17 * 60 + 51)
 
           if not active:
               minute = now.hour * 60 + now.minute
@@ -53,7 +57,8 @@ jobs:
               elif minute in evening:
                   period, active = "evening", True
 
-          assert 7 * 60 + 29 not in morning and 8 * 60 + 30 in morning and 17 * 60 + 50 in evening
+          assert 2 * 60 + 59 not in morning and 8 * 60 + 30 in morning and 17 * 60 + 50 in evening
+          assert not set(morning) & set(evening)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print(f"active={str(active).lower()}", file=output)
